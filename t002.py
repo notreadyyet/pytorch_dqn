@@ -247,7 +247,7 @@ class CForex(gym.Env):
 
         self.m_iLastAction=iAction        #    Close position
 
-        return copy.deepcopy(self.m_afObservation), fReward, done, oInfo
+        return copy.deepcopy(self.m_afObservation), np.float32(fReward), done, oInfo
 
     def render(self, mode: str = 'rgb_array'):
         """Renders the environment.
