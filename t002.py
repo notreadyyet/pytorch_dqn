@@ -19,6 +19,7 @@ import sys
 import re
 import os
 import copy
+import progressbar
 
 # configurations
 #    observe_dim = 4
@@ -31,7 +32,7 @@ solved_repeat = 5
 eval_interval = 1000  # @param {type:"integer"}
 g_sDataDir="{}/data".format(sys.path[0])
 g_fPip=0.0001
-g_sTrainFileName = "eurusd_test"
+g_sTrainFileName = "eurusd_bb_01"
 g_sTestFileName = "eurusd_bb_02"
 g_sEvalFileName = "eurusd_bb_03"
 g_fAccBalance=1000.0
@@ -43,7 +44,7 @@ g_sScriptFile=m.group(1)
 g_sTrainFullFileName="{}/{}.csv".format(g_sDataDir, g_sTrainFileName)
 g_sTestFullFileName="{}/{}.csv".format(g_sDataDir, g_sTestFileName)
 g_sEvalFullFileName="{}/{}.csv".format(g_sDataDir, g_sEvalFileName)
-g_sModel1="{}/model_{}".format(g_sDataDir, g_sScriptFile)
+g_sModel1="{}/models/{}".format(sys.path[0], g_sScriptFile)
 g_sTime = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 g_sLogDir1="{}/logs/{}/{}".format(sys.path[0], g_sScriptFile, g_sTime)
 g_sCheckPointsDir1="{}/checkpoint/{}".format(sys.path[0], g_sScriptFile)
@@ -247,7 +248,7 @@ class CForex(gym.Env):
 
         self.m_iLastAction=iAction        #    Close position
 
-        return copy.deepcopy(self.m_afObservation), np.float32(fReward), done, oInfo
+        return copy.deepcopy(self.m_afObservation), fReward, done, oInfo
 
     def render(self, mode: str = 'rgb_array'):
         """Renders the environment.
@@ -295,7 +296,6 @@ env = CForex(g_sTrainFullFileName)
 env.reset()
 im=PIL.Image.fromarray(env.render())
 #    ires=im.save("test.png")
-
 #    env = gym.make("CartPole-v0")
 
 # model definition
@@ -312,30 +312,29 @@ class QNet(nn.Module):
         a = t.relu(self.fc2(a))
         return self.fc3(a)
 
+# let framework determine input/output device based on parameter location
+# a warning will be thrown.
+q_net = QNet(env.observation_spec().shape[0], action_num)
+q_net_t = QNet(env.observation_spec().shape[0], action_num)
 
-if __name__ == "__main__":
-    # let framework determine input/output device based on parameter location
-    # a warning will be thrown.
-    q_net = QNet(env.observation_spec().shape[0], action_num)
-    q_net_t = QNet(env.observation_spec().shape[0], action_num)
+# to mark the input/output device Manually
+# will not work if you move your model to other devices
+# after wrapping
 
-    # to mark the input/output device Manually
-    # will not work if you move your model to other devices
-    # after wrapping
+# q_net = static_module_wrapper(q_net, "cpu", "cpu")
+# q_net_t = static_module_wrapper(q_net_t, "cpu", "cpu")
 
-    # q_net = static_module_wrapper(q_net, "cpu", "cpu")
-    # q_net_t = static_module_wrapper(q_net_t, "cpu", "cpu")
+# to mark the input/output device Automatically
+# will not work if you model locates on multiple devices
 
-    # to mark the input/output device Automatically
-    # will not work if you model locates on multiple devices
+q_net = dynamic_module_wrapper(q_net)
+q_net_t = dynamic_module_wrapper(q_net_t)
 
-    # q_net = dynamic_module_wrapper(q_net)
-    # q_net_t = dynamic_module_wrapper(q_net_t)
+dqn = DQN(q_net, q_net_t,
+          t.optim.Adam,
+          nn.MSELoss(reduction='sum'))
 
-    dqn = DQN(q_net, q_net_t,
-              t.optim.Adam,
-              nn.MSELoss(reduction='sum'))
-
+def fnTrain():
     episode, step, reward_fulfilled = 0, 0, 0
     smoothed_total_reward = 0
 
@@ -362,7 +361,7 @@ if __name__ == "__main__":
                     "state": {"some_state": old_state},
                     "action": {"action": action},
                     "next_state": {"some_state": state},
-                    "reward": reward,
+                    "reward": np.float32(reward),
                     "terminal": terminal or step == max_steps
                 })
 
@@ -381,6 +380,36 @@ if __name__ == "__main__":
             reward_fulfilled += 1
             if reward_fulfilled >= solved_repeat:
                 logger.info("Environment solved!")
-                exit(0)
+                break
         else:
             reward_fulfilled = 0
+    dqn.save(g_sModel1)
+
+def fnTest():
+    print("Testing begins")
+    oTestFile=CCsvQuotes(g_sTestFullFileName)
+    bar = progressbar.ProgressBar(maxval=oTestFile.m_iNumLines, \
+        widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+    bar.start()
+    iLineCounter=0
+    while (True):
+        asQuotes=oTestFile.fnRead()
+        if (asQuotes is None):
+            break
+        afQuotes=[float(fQuote) for fQuote in asQuotes]
+        afQuotes[1]=0   #    Kill the iAction from file
+        state = t.tensor(afQuotes, dtype=t.float32).view(1, env.observation_spec().shape[0])
+        action=dqn.act_discrete_with_noise(
+                    {"some_state": state}
+                )
+        action=action.item()
+        iLineCounter+=1
+        bar.update(iLineCounter)
+    bar.finish()
+
+if __name__ == "__main__":
+    if (0==len(os.listdir(g_sModel1))):
+        fnTrain()
+    else:
+        dqn.load(g_sModel1)
+    fnTest()
