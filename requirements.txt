@@ -31,6 +31,7 @@ idna==2.10
 imageio==2.9.0
 imageio-ffmpeg==0.4.2
 importlib-metadata==2.0.0
+install==1.3.4
 ipython @ file:///tmp/build/80754af9/ipython_1598883837425/work
 ipython-genutils==0.2.0
 jedi @ file:///tmp/build/80754af9/jedi_1596490743326/work
@@ -44,14 +45,14 @@ mkl-fft==1.2.0
 mkl-random==1.1.1
 mkl-service==2.3.0
 moviepy==1.0.3
-numpy==1.19.2
+numpy==1.18.5
 oauthlib==3.1.0
 opt-einsum==3.3.0
 pandas @ file:///tmp/build/80754af9/pandas_1602088128026/work
 parso==0.7.0
 pexpect @ file:///tmp/build/80754af9/pexpect_1594383317248/work
 pickleshare @ file:///tmp/build/80754af9/pickleshare_1594384075987/work
-Pillow==8.0.0
+Pillow==8.0.1
 portpicker==1.3.1
 proglog==0.1.9
 progressbar==2.5
@@ -83,6 +84,7 @@ tensorflow-estimator==2.3.0
 tensorflow-probability==0.11.1
 termcolor==1.1.0
 torch==1.6.0
+torchvision==0.5.0
 torchviz==0.0.1
 tqdm==4.50.2
 traitlets @ file:///tmp/build/80754af9/traitlets_1602787416690/work
