@@ -23,11 +23,10 @@ import progressbar
 
 # configurations
 #    observe_dim = 4
-action_num = 2
 #    max_episodes = 1000
 max_steps = 200
-solved_reward = 190
-solved_repeat = 5
+#    solved_reward = 190
+solved_repeat = 100
 
 eval_interval = 1000  # @param {type:"integer"}
 g_sDataDir="{}/data".format(sys.path[0])
@@ -38,6 +37,8 @@ g_sEvalFileName = "eurusd_bb_03"
 g_fAccBalance=1000.0
 g_fLotSize=100000.0
 g_fMaxLoss=0.3
+g_fPositionLoss=-100.00
+g_fPositionProfit=300.00
 
 m = re.search("([^\\\\\\/]+)\\.\\w+$", sys.argv[0])
 g_sScriptFile=m.group(1)
@@ -48,6 +49,8 @@ g_sModel1="{}/models/{}".format(sys.path[0], g_sScriptFile)
 g_sTime = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 g_sLogDir1="{}/logs/{}/{}".format(sys.path[0], g_sScriptFile, g_sTime)
 g_sCheckPointsDir1="{}/checkpoint/{}".format(sys.path[0], g_sScriptFile)
+
+device = t.device("cuda" if t.cuda.is_available() else "cpu")
 
 class CCsvQuotes:
     def fnClose(self):
@@ -103,11 +106,13 @@ class CCsvQuotes:
         self.fnOpen()
         self.m_iNumLines=self.fnCountLines()
 
+def fnCalcDiff(IN_sOpenPrice, IN_sCurrentPrice):
+    return (IN_sCurrentPrice-IN_sOpenPrice)*g_fLotSize
 #    https://github.com/openai/gym/blob/master/gym/envs/toy_text/hotter_colder.py
 class CForex(gym.Env):
 
     def fnCalcDiff(self):
-        return (self.m_afObservation[0]-self.m_fPositionPrice)*g_fLotSize
+        return fnCalcDiff(self.m_fPositionPrice, self.m_afObservation[0])
 
     def __init__(self, IN_sCsvFileName):
         self.m_asActions=["Long", "Short", "Close position"]
@@ -303,9 +308,9 @@ class QNet(nn.Module):
     def __init__(self, state_dim, action_num):
         super(QNet, self).__init__()
 
-        self.fc1 = nn.Linear(state_dim, 16)
-        self.fc2 = nn.Linear(16, 16)
-        self.fc3 = nn.Linear(16, action_num)
+        self.fc1 = nn.Linear(state_dim, state_dim)
+        self.fc2 = nn.Linear(state_dim, state_dim)
+        self.fc3 = nn.Linear(state_dim, action_num)
 
     def forward(self, some_state):
         a = t.relu(self.fc1(some_state))
@@ -314,8 +319,8 @@ class QNet(nn.Module):
 
 # let framework determine input/output device based on parameter location
 # a warning will be thrown.
-q_net = QNet(env.observation_spec().shape[0], action_num)
-q_net_t = QNet(env.observation_spec().shape[0], action_num)
+q_net = QNet(env.observation_spec().shape[0], len(env.m_asActions))
+q_net_t = QNet(env.observation_spec().shape[0], len(env.m_asActions))
 
 # to mark the input/output device Manually
 # will not work if you move your model to other devices
@@ -323,6 +328,8 @@ q_net_t = QNet(env.observation_spec().shape[0], action_num)
 
 # q_net = static_module_wrapper(q_net, "cpu", "cpu")
 # q_net_t = static_module_wrapper(q_net_t, "cpu", "cpu")
+# q_net = static_module_wrapper(q_net, device, device)
+# q_net_t = static_module_wrapper(q_net_t, device, device)
 
 # to mark the input/output device Automatically
 # will not work if you model locates on multiple devices
@@ -337,8 +344,9 @@ dqn = DQN(q_net, q_net_t,
 def fnTrain():
     episode, step, reward_fulfilled = 0, 0, 0
     smoothed_total_reward = 0
+    iNumOfTrainSamples=env.fnNumIterations()
 
-    while episode < env.fnNumIterations():
+    while episode < iNumOfTrainSamples:
         episode += 1
         total_reward = 0
         terminal = False
@@ -373,10 +381,10 @@ def fnTrain():
         # show reward
         smoothed_total_reward = (smoothed_total_reward * 0.9 +
                                  total_reward * 0.1)
-        logger.info("Episode {} total reward={:.2f}"
-                    .format(episode, smoothed_total_reward))
+        logger.info("Episode {} of {} ({:.2f}%), total reward={:.2f}"
+                    .format(episode, iNumOfTrainSamples, 100.00*episode/iNumOfTrainSamples, smoothed_total_reward))
 
-        if smoothed_total_reward > solved_reward:
+        if smoothed_total_reward > g_fPositionProfit:
             reward_fulfilled += 1
             if reward_fulfilled >= solved_repeat:
                 logger.info("Environment solved!")
@@ -387,27 +395,124 @@ def fnTrain():
 
 def fnTest():
     print("Testing begins")
+    afPrices=[]
+    xLong=[]
+    yLong=[]
+    xShort=[]
+    yShort=[]
+    xCloseLong=[]
+    yCloseLong=[]
+    xCloseShort=[]
+    yCloseShort=[]
+    xAccumulatedProfits=[]
+    yAccumulatedProfits=[]
     oTestFile=CCsvQuotes(g_sTestFullFileName)
     bar = progressbar.ProgressBar(maxval=oTestFile.m_iNumLines, \
         widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
     bar.start()
     iLineCounter=0
+    iLastAction=-1
+    iPositionAction=2                    #    Close position
+    fAccumulatedProfit=0
+    fPosPrice=0
     while (True):
         asQuotes=oTestFile.fnRead()
         if (asQuotes is None):
             break
         afQuotes=[float(fQuote) for fQuote in asQuotes]
         afQuotes[1]=0   #    Kill the iAction from file
+        fQuote=afQuotes[0]
         state = t.tensor(afQuotes, dtype=t.float32).view(1, env.observation_spec().shape[0])
         action=dqn.act_discrete_with_noise(
                     {"some_state": state}
                 )
-        action=action.item()
+        iAction=action.item()
+        afPrices.append(fQuote)
+        if (0==fPosPrice):
+            if (0==iAction):                      #    Long
+                xLong.append(iLineCounter)
+                yLong.append(fQuote)
+                fPosPrice=fQuote
+                iPositionAction=iAction
+            elif (1==iAction):                    #    Short
+                xShort.append(iLineCounter)
+                yShort.append(fQuote)
+                fPosPrice=fQuote
+                iPositionAction=iAction
+            elif (2==iAction):                    #    Close position
+                if (0==iLastAction):
+                    xCloseLong.append(iLineCounter)
+                    yCloseLong.append(fQuote)
+                elif (1==iLastAction):
+                    xCloseShort.append(iLineCounter)
+                    yCloseShort.append(fQuote)
+                iPositionAction=2                    #    Close position
+            else:
+                print ("Unexpected action: {}".format(iAction))
+                iPositionAction=iAction
+        else:
+            fProfit=fnCalcDiff(fPosPrice, fQuote)
+            if (1==iPositionAction):                    #    Short
+                fProfit=-fProfit
+            if (0==iPositionAction):                    #    Long
+                if (1==iAction):                        #    Short
+                    xShort.append(iLineCounter)
+                    yShort.append(fQuote)
+                    fPosPrice=fQuote
+                    iPositionAction=iAction
+                    fAccumulatedProfit+=fProfit
+                    xAccumulatedProfits.append(iLineCounter)
+                    yAccumulatedProfits.append(fAccumulatedProfit)
+                elif(2==iAction or fProfit<g_fPositionLoss or fProfit>g_fPositionProfit):
+                    xCloseLong.append(iLineCounter)
+                    yCloseLong.append(fQuote)
+                    fPosPrice=0
+                    iPositionAction=2                    #    Close position
+                    fAccumulatedProfit+=fProfit
+                    xAccumulatedProfits.append(iLineCounter)
+                    yAccumulatedProfits.append(fAccumulatedProfit)
+            elif (1==iPositionAction):                   #    Short
+                if (0==iAction):                         #    Long
+                    xLong.append(iLineCounter)
+                    yLong.append(fQuote)
+                    fPosPrice=fQuote
+                    iPositionAction=iAction
+                    fAccumulatedProfit+=fProfit
+                    xAccumulatedProfits.append(iLineCounter)
+                    yAccumulatedProfits.append(fAccumulatedProfit)
+                elif(2==iAction or fProfit<g_fPositionLoss or fProfit>g_fPositionProfit):
+                    xCloseShort.append(iLineCounter)
+                    yCloseShort.append(fQuote)
+                    fPosPrice=0
+                    iPositionAction=2                    #    Close position
+                    fAccumulatedProfit+=fProfit
+                    xAccumulatedProfits.append(iLineCounter)
+                    yAccumulatedProfits.append(fAccumulatedProfit)
+            else:
+                print("Error: ... position action={}".format(iPositionAction))
+        iLastAction=iAction
         iLineCounter+=1
         bar.update(iLineCounter)
     bar.finish()
+    print("Total profit={}".format(fAccumulatedProfit))
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+    ax1.plot(afPrices)
+    if (0<len(xLong)):
+        ax1.scatter(xLong, yLong, marker='^',  c='green');
+    if (0<len(xShort)):
+        ax1.scatter(xShort, yShort, marker='v',  c='red');
+    if (0<len(xCloseLong)):
+        ax1.scatter(xCloseLong, yCloseLong, marker='X',  c='green');
+    if (0<len(xCloseShort)):
+        ax1.scatter(xCloseShort, yCloseShort, marker='X',  c='red');
+    if (0<len(xAccumulatedProfits)):
+        ax2.plot(xAccumulatedProfits, yAccumulatedProfits)
+    ax1.set_title("Test")
+    plt.show()
 
 if __name__ == "__main__":
+    if not os.path.exists(g_sModel1):
+        os.makedirs(g_sModel1)
     if (0==len(os.listdir(g_sModel1))):
         fnTrain()
     else:
