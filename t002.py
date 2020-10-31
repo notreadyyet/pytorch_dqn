@@ -32,7 +32,7 @@ eval_interval = 1000  # @param {type:"integer"}
 g_sDataDir="{}/data".format(sys.path[0])
 g_fPip=0.0001
 g_sTrainFileName = "eurusd_bb_01"
-g_sTestFileName = "eurusd_bb_02"
+g_sTestFileName = "eurusd_bb_10"
 g_sEvalFileName = "eurusd_bb_03"
 g_fAccBalance=1000.0
 g_fLotSize=100000.0
@@ -310,12 +310,14 @@ class QNet(nn.Module):
 
         self.fc1 = nn.Linear(state_dim, state_dim)
         self.fc2 = nn.Linear(state_dim, state_dim)
-        self.fc3 = nn.Linear(state_dim, action_num)
+        self.fc3 = nn.Linear(state_dim, state_dim)
+        self.fc4 = nn.Linear(state_dim, action_num)
 
     def forward(self, some_state):
         a = t.relu(self.fc1(some_state))
         a = t.relu(self.fc2(a))
-        return self.fc3(a)
+        a = t.relu(self.fc3(a))
+        return self.fc4(a)
 
 # let framework determine input/output device based on parameter location
 # a warning will be thrown.
@@ -345,7 +347,8 @@ def fnTrain():
     episode, step, reward_fulfilled = 0, 0, 0
     smoothed_total_reward = 0
     iNumOfTrainSamples=env.fnNumIterations()
-
+    afRewardArray=[]
+    fMaxRewardSum=-np.inf
     while episode < iNumOfTrainSamples:
         episode += 1
         total_reward = 0
@@ -384,14 +387,21 @@ def fnTrain():
         logger.info("Episode {} of {} ({:.2f}%), total reward={:.2f}"
                     .format(episode, iNumOfTrainSamples, 100.00*episode/iNumOfTrainSamples, smoothed_total_reward))
 
-        if smoothed_total_reward > g_fPositionProfit:
-            reward_fulfilled += 1
-            if reward_fulfilled >= solved_repeat:
-                logger.info("Environment solved!")
-                break
-        else:
-            reward_fulfilled = 0
-    dqn.save(g_sModel1)
+        if(solved_repeat<=len(afRewardArray)):
+            afRewardArray.pop(0)
+        afRewardArray.append(smoothed_total_reward)
+        fRewardSum=np.sum(afRewardArray)
+        if (fMaxRewardSum<fRewardSum):
+            fMaxRewardSum=fRewardSum
+            dqn.save(g_sModel1)
+            print("Reward sum={}".format(fMaxRewardSum))
+#            if smoothed_total_reward > g_fPositionProfit:
+#                reward_fulfilled += 1
+#                if reward_fulfilled >= solved_repeat:
+#                    logger.info("Environment solved!")
+#                    break
+#            else:
+#                reward_fulfilled = 0
 
 def fnTest():
     print("Testing begins")
@@ -518,3 +528,4 @@ if __name__ == "__main__":
     else:
         dqn.load(g_sModel1)
     fnTest()
+
